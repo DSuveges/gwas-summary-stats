@@ -1,16 +1,23 @@
 #!/bin/bash
 # Job requirements
 #BSUB -J ot_gwas_sumstats_worker
-#BSUB -W 0:15
-#BSUB -n 12
-#BSUB -M 16384M
-#BSUB -R rusage[mem=16384M]
+#BSUB -M 7168M
+#BSUB -W 0:45
+#BSUB -R rusage[mem=7168M]
 #BSUB -R span[hosts=1]
 #BSUB -N
 #BSUB -e /nfs/production/opentargets/lsf/logs/ot_gwas_sumstats_worker-%J.err
 #BSUB -o /nfs/production/opentargets/lsf/logs/ot_gwas_sumstats_worker-%J.out
 
 # This script will process a single GWAS study.
+
+# For logging purposes recording start time:
+start_time=$(date "+%Y-%m-%d-%H-%M")
+
+# Job specific temparay folder:
+export TMPDIR=$(mktemp -d)
+echo "tempdir: ${TMPDIR}"
+trap "rm -rf ${TMPDIR}" EXIT
 
 # Environment variables
 if [[ -n "$LS_EXECCWD" ]]; then
@@ -24,10 +31,6 @@ SCRIPT_NAME=$(basename ${BASH_SOURCE[0]})
 # Operational defaults
 source ${SCRIPT_DIR}/config.sh
 
-# Bootstrapping
-export TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
-
 # Command line arguments
 # Check if PARAM_PATH_STUDY environment variable is set or if a command line argument is provided
 if [[ -n "$PARAM_PATH_STUDY" ]]; then
@@ -39,23 +42,26 @@ else
     exit 1
 fi
 
-
-# Get the GWAS study ID
+# Getting input related values:
 study_id=$(basename ${path_study} | egrep -o 'GCST[0-9]+')
 study_dir=$(dirname ${path_study})
 study_filename=$(basename ${path_study})
 study_checksum_file=${study_dir}/md5sum.txt
 study_checksum_value=$(cat ${study_checksum_file} | grep ${study_filename} | awk '{print $1}')
 study_ftp_path=${path_study/\/nfs\/ftp\/public/https:\/\/ftp.ebi.ac.uk\/pub}
+
 # The following path is used to store the study data after it has been processed
 path_study_data="$TMPDIR/${study_id}"
+
 # The following paths are related to GCP
 study_gcp_path_dst=${gcp_path_studies}/${study_id}
 study_gcp_path_checksum=${gcp_path_study_tracking}/${study_id}.md5
 study_gcp_path_status_error=${gcp_path_study_status}/${study_id}.error
+
 # LSF environment related paths
 lsf_path_output_error_file=${LSB_ERRORFILE:-$TMPDIR/job.out}
 lsf_path_output_file=${LSB_OUTPUTFILE:-$TMPDIR/job.err}
+
 # Analysis related perrs
 path_output_gwas_analysis_error=$(dirname ${lsf_path_output_error_file})/${study_id}.gwas_sumstats.err
 
@@ -175,8 +181,6 @@ function prepare_study_data_folder {
     #mkdir -p ${path_study_data}
 }
 
-
-
 # --- Main ---
 print_environment
 prepare_study_data_folder
@@ -217,7 +221,7 @@ log "[ ------------------------- [START] STUDY - '${study_id}' - PROCESSING PAYL
 if [[ ${flag_process_study} -eq 0 ]]; then
     log "Processing study '${study_id}'"
     # Process the study
-    #log "Copy file to current folder, '${path_study}'"
+
     singularity exec --bind /nfs/ftp:/nfs/ftp docker://${runtime_pyspark_image} python ${path_payload_processing} --input_file ${path_study} --output_file ${path_study_data} 2> ${path_output_gwas_analysis_error}
     if [[ $? -eq 0 ]]; then
         log "Study '${study_id}' processing was SUCCESSFUL"
@@ -238,5 +242,12 @@ if [[ ${flag_process_study} -eq 0 ]]; then
 else
     log "--- SKIP --- Study '${study_id}' does not need to be processed"
 fi
+
+# Get finish time:
+end_time=$(date "+%Y-%m-%d-%H-%M")
+log "job details: ${LSB_JOBID} ${study_id} ${start_time} ${end_time}"
+log "cleaning temporary directory: ${TMPDIR}"
+rm -rf ${TMPDIR}
+
 log "[ ------------------------- [END]   STUDY - '${study_id}' - PROCESSING PAYLOAD   [END] ---------------------------- ]"
 
